@@ -1,0 +1,140 @@
+<canvas id="sound"></canvas>
+
+<script type="module">
+import rnnoise from './rnnoise.js';
+
+
+const $ = document.querySelector.bind(document);
+
+// get the current user's audio stream
+function getAudioStream() {
+  return navigator.mediaDevices.getUserMedia({audio: true});
+}
+
+// analyse some text (not with a z because we're examining the audio input!)
+async function analyse(stream, hasDetector=false) {
+  // create context, analyser, source, and script processor
+  const context = new AudioContext();
+  const analyser = context.createAnalyser();
+  const source = context.createMediaStreamSource(stream);
+  const processor = context.createScriptProcessor(512, 1, 1);
+
+  if (hasDetector) {
+    // import the wasm
+    const {_rnnoise_create: createNoise, _free: free, _malloc: malloc, _rnnoise_process_frame: processNoise, _rnnoise_destroy: destroyNoise, HEAPF32} = await rnnoise();
+
+    // rnnoise takes 480 PCM float32 samples
+    const SAMPLE_LENGTH = 480;
+    const BUFFER_SIZE = SAMPLE_LENGTH * 4;
+
+    // create pcm buffers
+    const pcmInputBuf = malloc(BUFFER_SIZE);
+    if (!pcmInputBuf) { throw Error('failed to create input buff'); }
+    const pcmOutputBuf = malloc(BUFFER_SIZE);
+    if (!pcmOutputBuf) { free(pcmInputBuf); throw Error('failed to create output buff'); }
+    const pcmInputIndex = pcmInputBuf / 4;
+
+    // create the noise
+    let rnn = createNoise();
+
+    // cleanup memory from wasm
+    const destroy = () => {
+      if (!rnn) return;
+      pcmInputBuf && free(pcmInputBuf);
+      pcmOutputBuf && free(pcmOutputBuf);
+      destroyNoise(rnn);
+      rnn = 0;
+    };
+    // .. on window close
+    window.addEventListener('onunload', destroy);
+
+    // process a frame in rnnoise
+    const processFrame = sample => {
+      for (const [i, value] of sample.entries()) sample[i] = value * 0x7fff;
+      HEAPF32.set(sample, pcmInputIndex);
+      return processNoise(rnn, pcmOutputBuf, pcmInputBuf);
+    }
+
+    // container for leftover audio process data
+    let bufferResidue = new Float32Array([]);
+
+    processor.onaudioprocess = e => {
+      // proces data based on the sample length, use leftover buffer from previous process
+      const inData = [ ...bufferResidue, ...e.inputBuffer.getChannelData(0) ];
+      let i = 0;
+
+      // process each viable sample
+      for (; i + SAMPLE_LENGTH < inData.length; i += SAMPLE_LENGTH) {
+        const sample = inData.slice(i, i + SAMPLE_LENGTH);
+        const value = processFrame(sample);
+        $('#sound').style.border = value > 0.8 ? '4px solid green' : '4px solid #eee';
+      }
+
+      bufferResidue = inData.slice(i);
+    };
+
+    // connect everything together
+    source.connect(analyser);
+    analyser.connect(processor);
+    processor.connect(context.destination);
+
+  } else {
+    source.connect(analyser);
+    analyser.connect(context.destination);
+  }
+
+  // bins for the frequency renderer
+  const buffLen = analyser.frequencyBinCount;
+  const dataArray = new Uint8Array(buffLen);
+
+  return ctx => {
+    analyser.getByteFrequencyData(dataArray);
+
+    // draw background
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, 400, 200);
+
+    // draw a line to cover the frequency bins
+    ctx.strokeStyle = '#000';
+    ctx.beginPath();
+    ctx.moveTo(0, 200);
+    const slice = 400 / buffLen;
+    for (let i = 0; i < buffLen; i++) {
+      ctx.lineTo(slice * i, 200 - dataArray[i] / 128 * 100);
+    }
+    ctx.lineTo(400, 200);
+    ctx.stroke();
+
+    // fill in the area
+    ctx.fillStyle = 'green';
+    ctx.fill();
+  }
+}
+
+// setup the canvas for drawing
+function setupCanvas(elem) {
+  const ctx = elem.getContext('2d');
+  elem.style.border = '4px solid black';
+  elem.style.width = (ctx.canvas.width = 400) + 'px';
+  elem.style.height = (ctx.canvas.height = 200) + 'px';
+  return ctx;
+}
+
+const soundCtx = setupCanvas($('#sound'));
+
+(async () => {
+  // get the audio stream
+  const stream = await getAudioStream();
+
+  // process the sound
+  const soundDraw = await analyse(stream, true);
+
+  // render the frequency
+  function draw() {
+    soundDraw(soundCtx);
+    window.requestAnimationFrame(draw);
+  }
+  window.requestAnimationFrame(draw);
+})();
+
+</script>
