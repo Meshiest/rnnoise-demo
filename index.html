@@ -3,6 +3,7 @@
 <style>
 * {
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -111,12 +112,21 @@ function setupCanvas(elem) {
   return ctx;
 }
 
-(async () => {
+let started = false;
+
+const start = (async () => {
+  if (started) return;
+
   // get the audio stream
   const stream = await getAudioStream();
 
   // process the sound
   const soundDraw = await analyse(stream, true);
-})();
+  started = true;
+});
+
+start();
+
+document.body.addEventListener('click', start);
 
 </script>
